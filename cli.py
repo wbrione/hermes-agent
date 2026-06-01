@@ -2909,6 +2909,35 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 
 # ============================================================================
+# CLI session context prompt
+# ============================================================================
+
+
+def _build_cli_context_prompt() -> str:
+    """Build a ``Current Session Context`` block for CLI sessions.
+
+    Mirrors the Telegram/Discord/TUI gateway context injection so the
+    CLI agent also knows who it's talking to.  Identity comes from the
+    OS environment ($USER / $USERNAME) — there is no OAuth in CLI mode.
+    """
+    import platform as _plat
+
+    _os_user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+    if not _os_user:
+        return ""
+
+    lines = [
+        "## Current Session Context",
+        "",
+        "**Source:** Local",
+        f"**User:** {_os_user}",
+        f"**Platform:** {_plat.system()} {_plat.machine()}",
+    ]
+
+    return "\n".join(lines)
+
+
+# ============================================================================
 # HermesCLI Class
 # ============================================================================
 
@@ -5002,6 +5031,17 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+
+            # Inject CLI session context (user identity, platform info)
+            # into the agent's system prompt, matching Telegram/Discord/TUI.
+            _cli_context = _build_cli_context_prompt()
+            _ephemeral = self.system_prompt
+            if _cli_context:
+                if _ephemeral:
+                    _ephemeral = f"{_cli_context}\n\n{_ephemeral}"
+                else:
+                    _ephemeral = _cli_context
+
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -5016,7 +5056,7 @@ class HermesCLI:
                 disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
-                ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
+                ephemeral_system_prompt=_ephemeral if _ephemeral else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
