@@ -587,6 +587,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
 
+            # Build dashboard session context prompt (user identity etc.)
+            # Stored in session dict so it's available on every run_conversation call.
+            current["context_prompt"] = _build_dashboard_context_prompt()
+
             info = _session_info(agent, current)
             cfg_warn = _probe_config_health(_load_cfg())
             if cfg_warn:
@@ -768,17 +772,69 @@ def _save_cfg(cfg: dict):
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path
-        try:
-            _cfg_mtime = path.stat().st_mtime
-        except Exception:
-            _cfg_mtime = None
+    try:
+        _cfg_mtime = path.stat().st_mtime
+    except Exception:
+        _cfg_mtime = None
+
+
+def _build_dashboard_context_prompt() -> str:
+    """Build a session context prompt for the dashboard, mirroring the
+    gateway's ``build_session_context_prompt`` so the TUI agent knows
+    who it's talking to, just like Telegram/Discord agents do.
+
+    Returns an empty string when no user identity is available (loopback mode).
+    """
+    _uid = os.environ.get("HERMES_SESSION_USER_ID", "")
+    _uname = os.environ.get("HERMES_SESSION_USER_NAME", "")
+    if not _uid and not _uname:
+        return ""
+
+    from gateway.session import SessionContext, SessionSource, build_session_context_prompt
+    from gateway.config import Platform
+
+    # Register "dashboard" as a valid Platform pseudo-member so
+    # Platform("dashboard") works (the enum's _missing_ only accepts
+    # registered plugin platforms, so we inject it manually).
+    if "dashboard" not in Platform._value2member_map_:
+        _pseudo = object.__new__(Platform)
+        _pseudo._value_ = "dashboard"
+        _pseudo._name_ = "DASHBOARD"
+        Platform._value2member_map_["dashboard"] = _pseudo
+        Platform._member_map_["DASHBOARD"] = _pseudo
+
+    source = SessionSource(
+        platform=Platform("dashboard"),
+        chat_id="dashboard",
+        chat_name="Dashboard",
+        chat_type="dm",
+        user_id=_uid or None,
+        user_name=_uname or None,
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+    )
+    return build_session_context_prompt(context)
 
 
 def _set_session_context(session_key: str) -> list:
     try:
         from gateway.session_context import set_session_vars
 
-        return set_session_vars(session_key=session_key)
+        # Propagate dashboard-authenticated user identity to the gateway
+        # session context so the "Current Session Context" block in the
+        # system prompt includes the user's identity (matching Telegram/Discord).
+        _uid = os.environ.get("HERMES_SESSION_USER_ID", "")
+        _uname = os.environ.get("HERMES_SESSION_USER_NAME", "")
+
+        return set_session_vars(
+            platform="dashboard",
+            user_id=_uid,
+            user_name=_uname,
+            session_key=session_key,
+        )
     except Exception:
         return []
 
@@ -4098,6 +4154,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+
+            # Inject dashboard user identity context (matching Telegram/Discord).
+            context_prompt = session.get("context_prompt", "")
+            if context_prompt:
+                run_kwargs["system_message"] = context_prompt
+
             result = agent.run_conversation(run_message, **run_kwargs)
 
             last_reasoning = None

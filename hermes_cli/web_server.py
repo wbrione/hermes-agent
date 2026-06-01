@@ -4732,7 +4732,7 @@ def _ws_request_is_allowed(ws: "WebSocket") -> bool:
     return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
 
 
-def _ws_auth_ok(ws: "WebSocket") -> bool:
+def _ws_auth_ok(ws: "WebSocket"):
     """Validate WS-upgrade auth in either loopback or gated mode.
 
     Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
@@ -4743,9 +4743,12 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     token path is unconditionally rejected in this mode (the SPA bundle
     isn't carrying the token any longer).
 
-    Returns True if the WS should be accepted; callers close with the
-    appropriate WS code (4401) on False. Audit-logs the rejection so
-    operators can debug "WS keeps closing" issues from the log.
+    Returns a truthy value if the WS should be accepted; callers close
+    with the appropriate WS code (4401) on a falsy return. In gated mode,
+    the return value is the ticket info dict (containing ``user_id``,
+    ``user_name``, and ``provider``). In loopback mode, returns ``True``.
+    Returns ``False`` on rejection. Audit-logs the rejection so operators
+    can debug "WS keeps closing" issues from the log.
     """
     auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
@@ -4761,8 +4764,8 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
         )
 
         try:
-            consume_ticket(ticket)
-            return True
+            info = consume_ticket(ticket)
+            return info
         except TicketInvalid as exc:
             audit_log(
                 AuditEvent.WS_TICKET_REJECTED,
@@ -4786,6 +4789,8 @@ _event_lock = asyncio.Lock()
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
+    dashboard_user_id: Optional[str] = None,
+    dashboard_user_name: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -4832,6 +4837,12 @@ def _resolve_chat_argv(
     if gateway_ws_url := _build_gateway_ws_url():
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
+    if dashboard_user_id:
+        env["HERMES_SESSION_USER_ID"] = dashboard_user_id
+
+    if dashboard_user_name:
+        env["HERMES_SESSION_USER_NAME"] = dashboard_user_name
+
     return list(argv), str(cwd) if cwd else None, env
 
 
@@ -4848,7 +4859,15 @@ def _build_gateway_ws_url() -> Optional[str]:
         if ":" in host and not host.startswith("[")
         else f"{host}:{port}"
     )
-    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
+
+    if getattr(app.state, "auth_required", False):
+        # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
+        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+
+        ticket = mint_ticket(user_id="pty-gateway", provider="server-internal")
+        qs = urllib.parse.urlencode({"ticket": ticket})
+    else:
+        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
 
     return f"ws://{netloc}/api/ws?{qs}"
 
@@ -4917,9 +4936,18 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
-    if not _ws_auth_ok(ws):
+    auth_result = _ws_auth_ok(ws)
+    if not auth_result:
         await ws.close(code=4401)
         return
+
+    # Extract authenticated user identity from ticket info (gated mode).
+    # In loopback mode auth_result is True (bool), not a dict.
+    _dashboard_user_id = None
+    _dashboard_user_name = None
+    if isinstance(auth_result, dict):
+        _dashboard_user_id = auth_result.get("user_id")
+        _dashboard_user_name = auth_result.get("user_name")
 
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
@@ -4945,7 +4973,12 @@ async def pty_ws(ws: WebSocket) -> None:
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        argv, cwd, env = _resolve_chat_argv(
+            resume=resume,
+            sidecar_url=sidecar_url,
+            dashboard_user_id=_dashboard_user_id,
+            dashboard_user_name=_dashboard_user_name,
+        )
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
