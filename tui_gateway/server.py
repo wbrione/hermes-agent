@@ -805,44 +805,72 @@ def _save_cfg(cfg: dict):
 
 
 def _build_dashboard_context_prompt() -> str:
-    """Build a session context prompt for the dashboard, mirroring the
-    gateway's ``build_session_context_prompt`` so the TUI agent knows
-    who it's talking to, just like Telegram/Discord agents do.
+    """Build a session context prompt so the TUI agent knows who it's
+    talking to — mirroring the gateway's ``build_session_context_prompt``
+    for Telegram/Discord agents.
 
-    Returns an empty string when no user identity is available (loopback mode).
+    Two modes:
+
+    * **Dashboard mode** (identity available from WS ticket): Source is
+      Dashboard, user identity comes from the Authentik/OAuth session.
+    * **Terminal mode** (no dashboard identity): Source is Local, user
+      identity comes from the OS ($USER / $USERNAME).
+
+    Returns an empty string only when no identity can be determined at all
+    (extremely rare — $USER is almost always set on Linux/macOS).
     """
-    _uid = os.environ.get("HERMES_SESSION_USER_ID", "")
-    _uname = os.environ.get("HERMES_SESSION_USER_NAME", "")
-    if not _uid and not _uname:
-        return ""
+    import platform as _platform
 
-    from gateway.session import SessionContext, SessionSource, build_session_context_prompt
-    from gateway.config import Platform
+    # Try dashboard identity first (from WS ticket), then env vars, then OS.
+    _uid = ""
+    _uname = ""
+    _provider = ""
+    try:
+        from hermes_cli.web_server import _get_dashboard_identity
+        _uid, _uname, _provider = _get_dashboard_identity()
+    except Exception:
+        pass
+    if not _uid:
+        _uid = os.environ.get("HERMES_SESSION_USER_ID", "")
+    if not _uname:
+        _uname = os.environ.get("HERMES_SESSION_USER_NAME", "")
 
-    # Register "dashboard" as a valid Platform pseudo-member so
-    # Platform("dashboard") works (the enum's _missing_ only accepts
-    # registered plugin platforms, so we inject it manually).
-    if "dashboard" not in Platform._value2member_map_:
-        _pseudo = object.__new__(Platform)
-        _pseudo._value_ = "dashboard"
-        _pseudo._name_ = "DASHBOARD"
-        Platform._value2member_map_["dashboard"] = _pseudo
-        Platform._member_map_["DASHBOARD"] = _pseudo
+    lines = ["## Current Session Context", ""]
 
-    source = SessionSource(
-        platform=Platform("dashboard"),
-        chat_id="dashboard",
-        chat_name="Dashboard",
-        chat_type="dm",
-        user_id=_uid or None,
-        user_name=_uname or None,
-    )
-    context = SessionContext(
-        source=source,
-        connected_platforms=[],
-        home_channels={},
-    )
-    return build_session_context_prompt(context)
+    if _uid or _uname:
+        # ── Dashboard mode ────────────────────────────────────────
+        lines.append(f"**Source:** Dashboard (DM with {_uname or _uid})")
+        lines.append(f"**User:** {_uname or _uid} ({_uid})")
+        if not _provider:
+            _provider = "OAuth/SSO"
+        lines.append(
+            f"**Platform notes:** You are running inside the Hermes TUI "
+            f"({_platform.system()} {_platform.release()} {_platform.machine()}, "
+            f"host {_platform.node()}), Identity Provider: {_provider}"
+        )
+    else:
+        # ── Terminal / CLI mode ───────────────────────────────────
+        _os_user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+        if not _os_user:
+            return ""
+
+        lines.append("**Source:** Local (the machine running this agent)")
+        lines.append(f"**User:** {_os_user}")
+        _shell = os.environ.get("SHELL") or os.environ.get("COMSPEC", "")
+        _term = os.environ.get("TERM", "")
+        notes = (
+            f"**Platform notes:** You are running inside the Hermes TUI "
+            f"({_platform.system()} {_platform.release()} {_platform.machine()}, "
+            f"host {_platform.node()})."
+        )
+        notes += f" Username `{_os_user}` obtained from the OS environment."
+        if _shell:
+            notes += f" Shell: `{os.path.basename(_shell)}`."
+        if _term:
+            notes += f" Terminal: `{_term}`."
+        lines.append(notes)
+
+    return "\n".join(lines)
 
 
 def _set_session_context(session_key: str) -> list:
@@ -2423,6 +2451,9 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,
+        # Session context prompt (user identity etc.) — injected as
+        # system_message into every run_conversation call.
+        "context_prompt": _build_dashboard_context_prompt(),
     }
     db = _get_db()
     if db is not None:

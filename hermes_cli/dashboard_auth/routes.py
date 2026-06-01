@@ -485,7 +485,7 @@ async def api_auth_ws_ticket(request: Request):
     # don't load the ticket store.
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
 
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
+    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, user_name=sess.display_name)
     audit_log(
         AuditEvent.WS_TICKET_MINTED,
         provider=sess.provider,
