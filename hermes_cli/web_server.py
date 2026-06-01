@@ -101,6 +101,36 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 
+# ── Dashboard user identity store ────────────────────────────────────
+# When the gateway WS (/api/ws) authenticates a ticket that carries a
+# real user_id (not "pty-gateway"), the identity is stashed here so
+# the TUI gateway's _build_dashboard_context_prompt can read it.
+# Thread-safe: writes are rare (once per WS connect), reads happen
+# when the agent is built (also rare).
+_dashboard_identity: Dict[str, str] = {}
+_dashboard_identity_lock = threading.Lock()
+
+
+def _set_dashboard_identity(user_id: str, user_name: str, provider: str = "") -> None:
+    """Store the authenticated dashboard user identity for the current WS."""
+    with _dashboard_identity_lock:
+        _dashboard_identity["user_id"] = user_id
+        _dashboard_identity["user_name"] = user_name
+        _dashboard_identity["provider"] = provider
+
+
+def _get_dashboard_identity() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Read the authenticated dashboard user identity, if any.
+
+    Returns (user_id, user_name, provider).
+    """
+    with _dashboard_identity_lock:
+        return (
+            _dashboard_identity.get("user_id"),
+            _dashboard_identity.get("user_name"),
+            _dashboard_identity.get("provider"),
+        )
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -4791,6 +4821,7 @@ def _resolve_chat_argv(
     sidecar_url: Optional[str] = None,
     dashboard_user_id: Optional[str] = None,
     dashboard_user_name: Optional[str] = None,
+    dashboard_provider: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -4834,7 +4865,11 @@ def _resolve_chat_argv(
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
-    if gateway_ws_url := _build_gateway_ws_url():
+    if gateway_ws_url := _build_gateway_ws_url(
+        user_id=dashboard_user_id,
+        user_name=dashboard_user_name,
+        provider=dashboard_provider,
+    ):
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
     if dashboard_user_id:
@@ -4846,7 +4881,12 @@ def _resolve_chat_argv(
     return list(argv), str(cwd) if cwd else None, env
 
 
-def _build_gateway_ws_url() -> Optional[str]:
+def _build_gateway_ws_url(
+    *,
+    user_id: Optional[str] = None,
+    user_name: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> Optional[str]:
     """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic."""
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
@@ -4864,7 +4904,11 @@ def _build_gateway_ws_url() -> Optional[str]:
         # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
         from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
 
-        ticket = mint_ticket(user_id="pty-gateway", provider="server-internal")
+        ticket = mint_ticket(
+            user_id=user_id or "pty-gateway",
+            provider=provider or "server-internal",
+            user_name=user_name or "",
+        )
         qs = urllib.parse.urlencode({"ticket": ticket})
     else:
         qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
@@ -4945,9 +4989,11 @@ async def pty_ws(ws: WebSocket) -> None:
     # In loopback mode auth_result is True (bool), not a dict.
     _dashboard_user_id = None
     _dashboard_user_name = None
+    _dashboard_provider = None
     if isinstance(auth_result, dict):
         _dashboard_user_id = auth_result.get("user_id")
         _dashboard_user_name = auth_result.get("user_name")
+        _dashboard_provider = auth_result.get("provider")
 
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
@@ -4978,6 +5024,7 @@ async def pty_ws(ws: WebSocket) -> None:
             sidecar_url=sidecar_url,
             dashboard_user_id=_dashboard_user_id,
             dashboard_user_name=_dashboard_user_name,
+            dashboard_provider=_dashboard_provider,
         )
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
@@ -5068,13 +5115,24 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth_result = _ws_auth_ok(ws)
+    if not auth_result:
         await ws.close(code=4401)
         return
 
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
+
+    # Propagate authenticated user identity into the gateway's session
+    # scope so _build_dashboard_context_prompt can include it in the
+    # agent's system prompt (matching Telegram/Discord behavior).
+    if isinstance(auth_result, dict):
+        _ws_user_id = auth_result.get("user_id")
+        _ws_user_name = auth_result.get("user_name")
+        _ws_provider = auth_result.get("provider", "")
+        if _ws_user_id and _ws_user_id != "pty-gateway":
+            _set_dashboard_identity(_ws_user_id, _ws_user_name or "", _ws_provider or "")
 
     from tui_gateway.ws import handle_ws
 
