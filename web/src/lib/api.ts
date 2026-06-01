@@ -215,17 +215,18 @@ export const api = {
     fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
       allowUnauthorized: true,
     }),
-  logout: () =>
-    fetch(`${BASE}/auth/logout`, {
-      method: "POST",
-      credentials: "include",
-    }).then((r) => {
-      // /auth/logout returns 302 → /login. Follow that with a full-page
-      // navigation rather than letting fetch() opaquely consume the
-      // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
-      return r;
-    }),
+  logout: () => {
+    // Use a full-page form POST so the browser follows the 302
+    // redirect naturally — including cross-origin redirects to the
+    // IdP's end-session endpoint for RP-initiated logout.  fetch()
+    // with redirect:"manual" returns opaqueredirect (status 0,
+    // can't read Location header), so we can't redirect manually.
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = `${BASE}/auth/logout`;
+    document.body.appendChild(form);
+    form.submit();
+  },
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>

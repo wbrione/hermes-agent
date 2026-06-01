@@ -13,6 +13,9 @@ class Session:
     All fields are mandatory. Providers that don't have a concept of orgs
     should set ``org_id`` to an empty string. ``access_token`` and
     ``refresh_token`` are opaque to Hermes — provider-specific.
+    ``id_token`` is the OIDC ID token (JWT), needed for RP-initiated
+    logout (id_token_hint). Optional — providers that don't support
+    OIDC RP-initiated logout can leave it empty.
     """
 
     user_id: str
@@ -23,6 +26,7 @@ class Session:
     expires_at: int  # unix seconds; the access_token's exp claim
     access_token: str
     refresh_token: str
+    id_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,15 @@ class DashboardAuthProvider(ABC):
 
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
+
+    def get_end_session_url(self) -> Optional[str]:
+        """Return the IdP's end-session endpoint URL for RP-initiated logout.
+
+        Default implementation returns None (no IdP redirect on logout).
+        Providers that support OIDC RP-initiated logout should override
+        this to return their end_session_endpoint URL.
+        """
+        return None
 
 
 def assert_protocol_compliance(cls: type) -> None:
