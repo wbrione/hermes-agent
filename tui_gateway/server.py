@@ -839,36 +839,24 @@ def _build_dashboard_context_prompt() -> str:
 
     if _uid or _uname:
         # ── Dashboard mode ────────────────────────────────────────
-        lines.append(f"**Source:** Dashboard (DM with {_uname or _uid})")
+        _idp = _provider or "OAuth/SSO"
+        lines.append("**Source:** Dashboard")
         lines.append(f"**User:** {_uname or _uid} ({_uid})")
-        if not _provider:
-            _provider = "OAuth/SSO"
         lines.append(
-            f"**Platform notes:** You are running inside the Hermes TUI "
-            f"({_platform.system()} {_platform.release()} {_platform.machine()}, "
-            f"host {_platform.node()}), Identity Provider: {_provider}"
+            f"**Platform:** {_platform.system()} {_platform.machine()}"
         )
+        lines.append(f"**Identity Provider:** {_idp}")
     else:
         # ── Terminal / CLI mode ───────────────────────────────────
         _os_user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
         if not _os_user:
             return ""
 
-        lines.append("**Source:** Local (the machine running this agent)")
+        lines.append(f"**Source:** Local")
         lines.append(f"**User:** {_os_user}")
-        _shell = os.environ.get("SHELL") or os.environ.get("COMSPEC", "")
-        _term = os.environ.get("TERM", "")
-        notes = (
-            f"**Platform notes:** You are running inside the Hermes TUI "
-            f"({_platform.system()} {_platform.release()} {_platform.machine()}, "
-            f"host {_platform.node()})."
+        lines.append(
+            f"**Platform:** {_platform.system()} {_platform.machine()}"
         )
-        notes += f" Username `{_os_user}` obtained from the OS environment."
-        if _shell:
-            notes += f" Shell: `{os.path.basename(_shell)}`."
-        if _term:
-            notes += f" Terminal: `{_term}`."
-        lines.append(notes)
 
     return "\n".join(lines)
 
