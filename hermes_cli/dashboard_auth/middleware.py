@@ -187,6 +187,15 @@ async def gated_auth_middleware(
     if _path_is_public(path):
         return await call_next(request)
 
+    # WebSocket upgrade requests are authenticated by the per-endpoint
+    # WS auth layer (_ws_auth_ok via ?ticket= or ?internal=), not by
+    # session cookies. Pass them through so the WS handler can accept
+    # or reject based on its own auth. Without this, the PTY child
+    # process (which has no browser cookies) can never connect to
+    # /api/ws or /api/pub, causing "gateway startup timeout" errors.
+    if request.headers.get("upgrade", "").lower() == "websocket":
+        return await call_next(request)
+
     at, _rt, _idt = read_session_cookies(request)
     if not at and not _rt:
         # Neither token present — no session at all. Nothing to verify or
