@@ -546,13 +546,15 @@ def _build_dashboard_context_prompt() -> str:
     try:
         from hermes_cli.web_server import _get_dashboard_identity
         _uid, _uname, _provider = _get_dashboard_identity()
-    except Exception:
-        pass
+        pass  # identity from store available
+    except Exception as e:
+        pass  # identity store failed
 
     if not _uid:
         _uid = os.environ.get("HERMES_SESSION_USER_ID", "")
     if not _uname:
         _uname = os.environ.get("HERMES_SESSION_USER_NAME", "")
+    # identity available
 
     lines = ["## Current Session Context", ""]
 
@@ -2416,6 +2418,14 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part
             ).strip()
+    # Prepend dashboard/terminal session context to the system prompt
+    # so the agent knows who it's talking to (matching Telegram/Discord).
+    _ctx = _build_dashboard_context_prompt()
+    if _ctx and system_prompt:
+        system_prompt = f"{_ctx}\n\n{system_prompt}"
+    elif _ctx:
+        system_prompt = _ctx
+
     model, requested_provider = _resolve_startup_runtime()
     runtime = resolve_runtime_provider(
         requested=requested_provider,
