@@ -143,6 +143,32 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # injection share a single, testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
+# ── Dashboard user identity store ────────────────────────────────────
+# When the gateway WS (/api/ws) authenticates a ticket that carries a
+# real user_id (not "server-internal"), the identity is stashed here so
+# the TUI gateway's _build_dashboard_context_prompt can read it.
+_dashboard_identity: Dict[str, str] = {}
+_dashboard_identity_lock = threading.Lock()
+
+
+def _set_dashboard_identity(user_id: str, user_name: str, provider: str = "") -> None:
+    with _dashboard_identity_lock:
+        _dashboard_identity["user_id"] = user_id
+        _dashboard_identity["user_name"] = user_name
+        _dashboard_identity["provider"] = provider
+
+
+def _get_dashboard_identity() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Read the authenticated dashboard user identity, if any.
+    Returns (user_id, user_name, provider).
+    """
+    with _dashboard_identity_lock:
+        return (
+            _dashboard_identity.get("user_id"),
+            _dashboard_identity.get("user_name"),
+            _dashboard_identity.get("provider"),
+        )
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -7196,7 +7222,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         if internal:
             try:
                 consume_internal_credential(internal)
-                return None, "internal"
+                return None, "internal", None
             except TicketInvalid as exc:
                 audit_log(
                     AuditEvent.WS_TICKET_REJECTED,
@@ -7204,15 +7230,15 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                     ip=(ws.client.host if ws.client else ""),
                     path=ws.url.path,
                 )
-                return "internal_invalid", "internal"
+                return "internal_invalid", "internal", None
 
         ticket = ws.query_params.get("ticket", "")
         if not ticket:
-            return "no_credential", "none"
+            return "no_credential", "none", None
 
         try:
-            consume_ticket(ticket)
-            return None, "ticket"
+            ticket_info = consume_ticket(ticket)
+            return None, "ticket", ticket_info
         except TicketInvalid as exc:
             audit_log(
                 AuditEvent.WS_TICKET_REJECTED,
@@ -7220,13 +7246,13 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 ip=(ws.client.host if ws.client else ""),
                 path=ws.url.path,
             )
-            return "ticket_invalid", "ticket"
+            return "ticket_invalid", "ticket", None
 
     token = ws.query_params.get("token", "")
     if not token:
-        return "no_credential", "none"
+        return "no_credential", "none", None
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
+        return None, "token", None
     return "token_mismatch", "token"
 
 
@@ -7412,7 +7438,7 @@ async def pty_ws(ws: WebSocket) -> None:
     #     browser banner agree on the cause:
     #       4401 bad credential   4403 host/origin mismatch
     #       4408 peer not allowed  4404 chat disabled
-    auth_reason, cred = _ws_auth_reason(ws)
+    auth_reason, cred, auth_info = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning(
@@ -7449,6 +7475,15 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
 
+    # --- extract authenticated user identity from ticket (gated mode) ---
+    _dashboard_user_id = None
+    _dashboard_user_name = None
+    _dashboard_provider = None
+    if isinstance(auth_info, dict):
+        _dashboard_user_id = auth_info.get("user_id")
+        _dashboard_user_name = auth_info.get("user_name")
+        _dashboard_provider = auth_info.get("provider")
+
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
     channel = _channel_or_close_code(ws)
@@ -7456,6 +7491,12 @@ async def pty_ws(ws: WebSocket) -> None:
 
     try:
         argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        # Propagate dashboard user identity to the PTY child via env vars.
+        # The TUI gateway reads these to build the session context prompt.
+        if _dashboard_user_id:
+            env["HERMES_SESSION_USER_ID"] = _dashboard_user_id
+        if _dashboard_user_name:
+            env["HERMES_SESSION_USER_NAME"] = _dashboard_user_name
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
@@ -7545,13 +7586,24 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth_reason, cred, auth_info = _ws_auth_reason(ws)
+    if auth_reason is not None:
         await ws.close(code=4401)
         return
 
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
+
+    # Propagate authenticated user identity into the gateway's session
+    # scope so _build_dashboard_context_prompt can include it in the
+    # agent's system prompt (matching Telegram/Discord behavior).
+    if isinstance(auth_info, dict):
+        _ws_user_id = auth_info.get("user_id")
+        _ws_user_name = auth_info.get("user_name")
+        _ws_provider = auth_info.get("provider", "")
+        if _ws_user_id and _ws_user_id != "server-internal":
+            _set_dashboard_identity(_ws_user_id, _ws_user_name or "", _ws_provider or "")
 
     from tui_gateway.ws import handle_ws
 

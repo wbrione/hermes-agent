@@ -3068,6 +3068,30 @@ def save_config_value(key_path: str, value: any) -> bool:
 # HermesCLI Class
 # ============================================================================
 
+def _build_cli_context_prompt() -> str:
+    """Build a Current Session Context block for CLI sessions.
+
+    Mirrors the Telegram/Discord/TUI gateway context injection so the
+    CLI agent also knows who it's talking to. Identity comes from the
+    OS environment ($USER / $USERNAME) — there is no OAuth in CLI mode.
+    """
+    import platform as _plat
+
+    _os_user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+    if not _os_user:
+        return ""
+
+    lines = [
+        "## Current Session Context",
+        "",
+        "**Source:** Local",
+        f"**User:** {_os_user}",
+        f"**Platform:** {_plat.system()} {_plat.machine()}",
+    ]
+
+    return "\n".join(lines)
+
+
 class HermesCLI:
     """
     Interactive CLI for the Hermes Agent.

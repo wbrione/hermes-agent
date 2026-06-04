@@ -39,7 +39,9 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login",
     "/auth/callback",
     "/auth/password-login",
-    "/auth/logout",
+    # "/auth/logout" removed — must go through gated_auth_middleware so
+    # request.state.session is populated and the handler can identify the
+    # provider for RP-initiated logout.
     "/login",
     "/api/auth/providers",
     "/assets/",
@@ -185,7 +187,7 @@ async def gated_auth_middleware(
     if _path_is_public(path):
         return await call_next(request)
 
-    at, _rt = read_session_cookies(request)
+    at, _rt, _idt = read_session_cookies(request)
     if not at and not _rt:
         # Neither token present — no session at all. Nothing to verify or
         # refresh; force login.

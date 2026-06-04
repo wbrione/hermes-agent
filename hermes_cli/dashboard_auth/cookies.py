@@ -59,6 +59,7 @@ from fastapi.responses import Response
 # request's HTTPS + prefix combination.
 SESSION_AT_COOKIE = "hermes_session_at"
 SESSION_RT_COOKIE = "hermes_session_rt"
+SESSION_IDT_COOKIE = "hermes_session_idt"
 PKCE_COOKIE = "hermes_session_pkce"
 
 # Possible name variants we may have to read back. Sorted so most-strict
@@ -120,6 +121,7 @@ def set_session_cookies(
     access_token_expires_in: int,
     use_https: bool,
     prefix: str = "",
+    id_token: str = "",
 ) -> None:
     """Set the session cookies on the response.
 
@@ -150,6 +152,14 @@ def set_session_cookies(
             _resolved_name(SESSION_RT_COOKIE, use_https=use_https, prefix=prefix),
             refresh_token,
             max_age=_RT_MAX_AGE,
+            **_common_attrs(use_https=use_https, prefix=prefix),
+        )
+    # OIDC ID token — needed for RP-initiated logout (id_token_hint).
+    if id_token:
+        response.set_cookie(
+            _resolved_name(SESSION_IDT_COOKIE, use_https=use_https, prefix=prefix),
+            id_token,
+            max_age=access_token_expires_in,
             **_common_attrs(use_https=use_https, prefix=prefix),
         )
 
@@ -212,11 +222,12 @@ def _read_with_fallback(
     return None
 
 
-def read_session_cookies(request: Request) -> Tuple[Optional[str], Optional[str]]:
-    """Returns (access_token, refresh_token), either may be None."""
+def read_session_cookies(request: Request) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Returns (access_token, refresh_token, id_token), any may be None."""
     at = _read_with_fallback(request, SESSION_AT_COOKIE)
     rt = _read_with_fallback(request, SESSION_RT_COOKIE)
-    return at, rt
+    idt = _read_with_fallback(request, SESSION_IDT_COOKIE)
+    return at, rt, idt
 
 
 def read_pkce_cookie(request: Request) -> Optional[str]:
