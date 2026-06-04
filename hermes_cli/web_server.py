@@ -7336,10 +7336,17 @@ def _build_gateway_ws_url() -> Optional[str]:
     if not host or not port:
         return None
 
+    # PTY child runs on the same host; replace wildcard binds with loopback
+    # so the Node.js TUI can actually connect (0.0.0.0 is not a valid
+    # connect target; Node.js ECONNREFUSE or timeout).
+    _connect_host = host
+    if host in {"0.0.0.0", "::"}:
+        _connect_host = "127.0.0.1" if host == "0.0.0.0" else "::1"
+
     netloc = (
-        f"[{host}]:{port}"
-        if ":" in host and not host.startswith("[")
-        else f"{host}:{port}"
+        f"[{_connect_host}]:{port}"
+        if ":" in _connect_host and not _connect_host.startswith("[")
+        else f"{_connect_host}:{port}"
     )
 
     if getattr(app.state, "auth_required", False):
@@ -7372,7 +7379,12 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     if not host or not port:
         return None
 
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    # Same loopback fix as _build_gateway_ws_url: 0.0.0.0 is not a
+    # valid connect target for the PTY child.
+    _connect_host = host
+    if host in {"0.0.0.0", "::"}:
+        _connect_host = "127.0.0.1" if host == "0.0.0.0" else "::1"
+    netloc = f"[{_connect_host}]:{port}" if ":" in _connect_host and not _connect_host.startswith("[") else f"{_connect_host}:{port}"
 
     if getattr(app.state, "auth_required", False):
         # Gated mode — use the internal credential so the WS upgrade survives
