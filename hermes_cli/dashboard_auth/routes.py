@@ -344,12 +344,13 @@ async def auth_callback(
     landing = _validate_post_login_target(next_from_cookie) or "/"
     resp = RedirectResponse(url=landing, status_code=302)
     set_session_cookies(
-        resp,
-        access_token=session.access_token,
-        refresh_token=session.refresh_token,
-        access_token_expires_in=expires_in,
-        use_https=detect_https(request),
-        prefix=_prefix(request),
+    resp,
+    access_token=session.access_token,
+    refresh_token=session.refresh_token,
+    access_token_expires_in=expires_in,
+    use_https=detect_https(request),
+    prefix=_prefix(request),
+    id_token=session.id_token,
     )
     clear_pkce_cookie(resp, prefix=_prefix(request))
     return resp
@@ -389,24 +390,24 @@ def _validate_post_login_target(raw: str) -> str:
     return decoded
 
 
-# ---------------------------------------------------------------------------
-# Public: password (non-redirect) login
-# ---------------------------------------------------------------------------
-#
-# Brute-force throttle. The OAuth flow has no guessable secret on our side
-# (the IDP owns credentials), but ``/auth/password-login`` accepts a
-# password we verify locally, so it's a credential-stuffing target. A
-# simple in-process sliding-window limiter per client IP raises the cost
-# of online guessing without any external dependency. It is intentionally
-# best-effort: process-local (resets on restart), and behind a trusting
-# proxy the IP is the proxy's unless X-Forwarded-For is set — which is why
-# this is defence-in-depth on top of the provider's own constant-time
-# verify, not the only line of defence.
+    # ---------------------------------------------------------------------------
+    # Public: password (non-redirect) login
+    # ---------------------------------------------------------------------------
+    #
+    # Brute-force throttle. The OAuth flow has no guessable secret on our side
+    # (the IDP owns credentials), but ``/auth/password-login`` accepts a
+    # password we verify locally, so it's a credential-stuffing target. A
+    # simple in-process sliding-window limiter per client IP raises the cost
+    # of online guessing without any external dependency. It is intentionally
+    # best-effort: process-local (resets on restart), and behind a trusting
+    # proxy the IP is the proxy's unless X-Forwarded-For is set — which is why
+    # this is defence-in-depth on top of the provider's own constant-time
+    # verify, not the only line of defence.
 
-_PW_RATE_MAX_ATTEMPTS = 10
-_PW_RATE_WINDOW_SEC = 60.0
-_pw_attempts: Dict[str, Deque[float]] = defaultdict(deque)
-_pw_attempts_lock = threading.Lock()
+    _PW_RATE_MAX_ATTEMPTS = 10
+    _PW_RATE_WINDOW_SEC = 60.0
+    _pw_attempts: Dict[str, Deque[float]] = defaultdict(deque)
+    _pw_attempts_lock = threading.Lock()
 
 
 def _password_rate_limited(ip: str) -> bool:
@@ -525,12 +526,13 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     landing = _validate_post_login_target(body.next) or "/"
     resp = JSONResponse({"ok": True, "next": landing})
     set_session_cookies(
-        resp,
-        access_token=session.access_token,
-        refresh_token=session.refresh_token,
-        access_token_expires_in=expires_in,
-        use_https=detect_https(request),
-        prefix=_prefix(request),
+    resp,
+    access_token=session.access_token,
+    refresh_token=session.refresh_token,
+    access_token_expires_in=expires_in,
+    use_https=detect_https(request),
+    prefix=_prefix(request),
+    id_token=session.id_token,
     )
     return resp
 
