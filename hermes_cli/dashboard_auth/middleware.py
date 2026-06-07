@@ -285,12 +285,13 @@ async def gated_auth_middleware(
             from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
             set_session_cookies(
-                response,
-                access_token=new_session.access_token,
-                refresh_token=new_session.refresh_token,
-                access_token_expires_in=_expires_in_seconds(new_session),
-                use_https=detect_https(request),
-                prefix=prefix_from_request(request),
+            response,
+            access_token=new_session.access_token,
+            refresh_token=new_session.refresh_token,
+            access_token_expires_in=_expires_in_seconds(new_session),
+            use_https=detect_https(request),
+            prefix=prefix_from_request(request),
+            id_token=new_session.id_token,
             )
             audit_log(
                 AuditEvent.REFRESH_SUCCESS,

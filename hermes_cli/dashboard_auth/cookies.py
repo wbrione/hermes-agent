@@ -168,14 +168,16 @@ def set_session_cookies(
             **_common_attrs(use_https=use_https, prefix=prefix),
         )
     # OIDC ID token — needed for RP-initiated logout (id_token_hint).
+    # Use RT max-age (not AT TTL) so the id_token survives AT expiry;
+    # the browser evicts AT-cookie on expiry, but the id_token must live
+    # long enough for the logout handler to send it as id_token_hint.
     if id_token:
         response.set_cookie(
             _resolved_name(SESSION_IDT_COOKIE, use_https=use_https, prefix=prefix),
             id_token,
-            max_age=access_token_expires_in,
+            max_age=_RT_MAX_AGE,
             **_common_attrs(use_https=use_https, prefix=prefix),
         )
-
 
 def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
     """Emit Max-Age=0 deletions for both session cookies.
