@@ -20,9 +20,10 @@ class Session:
     display_name: str
     org_id: str
     provider: str
-    expires_at: int  # unix seconds; the access_token's exp claim
+    expires_at: int # unix seconds; the access_token's exp claim
     access_token: str
     refresh_token: str
+    id_token: str = "" # OIDC ID token (JWT) for RP-initiated logout
 
 
 @dataclass(frozen=True)
@@ -152,6 +153,15 @@ class DashboardAuthProvider(ABC):
 
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
+
+    def get_end_session_url(self) -> Optional[str]:
+        """Return the IdP's end-session endpoint URL for RP-initiated logout.
+
+        Default implementation returns None (no IdP redirect on logout).
+        Providers that support OIDC RP-initiated logout should override
+        this to return their end_session_endpoint URL.
+        """
+        return None
 
     def complete_password_login(
         self, *, username: str, password: str

@@ -649,6 +649,62 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+def _build_dashboard_context_prompt() -> str:
+    """Build a session context prompt so the TUI agent knows who it's
+    talking to — mirroring the gateway's session context for
+    Telegram/Discord agents.
+
+    Two modes:
+
+    * **Dashboard mode** (identity available from WS ticket): Source is
+      Dashboard, user identity comes from the Authentik/OAuth session.
+    * **Terminal mode** (no dashboard identity): Source is Local, user
+      identity comes from the OS ($USER / $USERNAME).
+
+    Returns an empty string only when no identity can be determined at all.
+    """
+    import platform as _platform
+
+    _uid = ""
+    _uname = ""
+    _provider = ""
+    try:
+        from hermes_cli.web_server import _get_dashboard_identity
+        _uid, _uname, _provider = _get_dashboard_identity()
+        # identity from store available
+    except Exception:
+        # identity store failed
+        pass
+
+    if not _uid:
+        _uid = os.environ.get("HERMES_SESSION_USER_ID", "")
+    if not _uname:
+        _uname = os.environ.get("HERMES_SESSION_USER_NAME", "")
+    # identity available
+
+    lines = ["## Current Session Context", ""]
+
+    if _uid or _uname:
+        _idp = _provider or "OAuth/SSO"
+        lines.append("**Source:** Dashboard")
+        lines.append(f"**User:** {_uname or _uid} ({_uid})")
+        lines.append(
+            f"**Platform:** {_platform.system()} {_platform.machine()}"
+        )
+        lines.append(f"**Identity Provider:** {_idp}")
+    else:
+        _os_user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+        if not _os_user:
+            return ""
+        lines.append("**Source:** Local")
+        lines.append(f"**User:** {_os_user}")
+        lines.append(
+            f"**Platform:** {_platform.system()} {_platform.machine()}"
+        )
+
+    return "\n".join(lines)
+
+
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
@@ -2620,6 +2676,14 @@ def _make_agent(
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part
             ).strip()
+    # Prepend dashboard/terminal session context to the system prompt
+    # so the agent knows who it's talking to (matching Telegram/Discord).
+    _ctx = _build_dashboard_context_prompt()
+    if _ctx and system_prompt:
+        system_prompt = f"{_ctx}\n\n{system_prompt}"
+    elif _ctx:
+        system_prompt = _ctx
+
     # Prefer a per-session model override (set by a prior in-session /model
     # switch) over global config/env resolution. This keeps a rebuilt session
     # (/new, resume) on the model the user picked FOR THIS SESSION, without
@@ -2708,6 +2772,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             "model_override": None,
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
+        "context_prompt": _build_dashboard_context_prompt(),
             "transport": current_transport() or _stdio_transport,
         }
     db = _get_db()
@@ -3139,6 +3204,7 @@ def _(rid, params: dict) -> dict:
             "slash_worker": None,
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
+        "context_prompt": _build_dashboard_context_prompt(),
             "transport": current_transport() or _stdio_transport,
         }
         _register_session_cwd(_sessions[sid])

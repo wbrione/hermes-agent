@@ -191,6 +191,32 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # injection share a single, testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
+# ── Dashboard user identity store ────────────────────────────────────
+# When the gateway WS (/api/ws) authenticates a ticket that carries a
+# real user_id (not "server-internal"), the identity is stashed here so
+# the TUI gateway's _build_dashboard_context_prompt can read it.
+_dashboard_identity: Dict[str, str] = {}
+_dashboard_identity_lock = threading.Lock()
+
+
+def _set_dashboard_identity(user_id: str, user_name: str, provider: str = "") -> None:
+    with _dashboard_identity_lock:
+        _dashboard_identity["user_id"] = user_id
+        _dashboard_identity["user_name"] = user_name
+        _dashboard_identity["provider"] = provider
+
+
+def _get_dashboard_identity() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Read the authenticated dashboard user identity, if any.
+    Returns (user_id, user_name, provider).
+    """
+    with _dashboard_identity_lock:
+        return (
+            _dashboard_identity.get("user_id"),
+            _dashboard_identity.get("user_name"),
+            _dashboard_identity.get("provider"),
+        )
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -8273,11 +8299,13 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str, Optional[Dict[str, Any]]]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
     ``reason`` is None when the credential is accepted, else a short
-    machine-parseable token explaining the rejection (``no_credential``,
+    machine-parseable token explaining the rejection.
+    The third element is the ticket info dict when a ticket was consumed
+    (carrying user_id/provider/user_name), or None otherwise. (``no_credential``,
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``).
     ``credential`` names which credential type was presented (``ticket``,
     ``internal``, ``token``, or ``none``) so the accepted path can log *how*
@@ -8347,13 +8375,13 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 ip=(ws.client.host if ws.client else ""),
                 path=ws.url.path,
             )
-            return "ticket_invalid", "ticket"
+            return "ticket_invalid", "ticket", None
 
     token = ws.query_params.get("token", "")
     if not token:
-        return "no_credential", "none"
+        return "no_credential", "none", None
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
+        return None, "token", None
     return "token_mismatch", "token"
 
 
@@ -8437,10 +8465,17 @@ def _build_gateway_ws_url() -> Optional[str]:
     if not host or not port:
         return None
 
+    # PTY child runs on the same host; replace wildcard binds with loopback
+    # so the Node.js TUI can actually connect (0.0.0.0 is not a valid
+    # connect target; Node.js ECONNREFUSE or timeout).
+    _connect_host = host
+    if host in {"0.0.0.0", "::"}:
+        _connect_host = "127.0.0.1" if host == "0.0.0.0" else "::1"
+
     netloc = (
-        f"[{host}]:{port}"
-        if ":" in host and not host.startswith("[")
-        else f"{host}:{port}"
+        f"[{_connect_host}]:{port}"
+        if ":" in _connect_host and not _connect_host.startswith("[")
+        else f"{_connect_host}:{port}"
     )
 
     if getattr(app.state, "auth_required", False):
@@ -8473,7 +8508,11 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     if not host or not port:
         return None
 
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    _connect_host = host
+    if host in {"0.0.0.0", "::"}:
+        _connect_host = "127.0.0.1" if host == "0.0.0.0" else "::1"
+
+    netloc = f"[{_connect_host}]:{port}" if ":" in _connect_host and not _connect_host.startswith("[") else f"{_connect_host}:{port}"
 
     if getattr(app.state, "auth_required", False):
         # Gated mode — use the internal credential so the WS upgrade survives
@@ -8539,7 +8578,7 @@ async def pty_ws(ws: WebSocket) -> None:
     #     browser banner agree on the cause:
     #       4401 bad credential   4403 host/origin mismatch
     #       4408 peer not allowed  4404 chat disabled
-    auth_reason, cred = _ws_auth_reason(ws)
+    auth_reason, cred, ticket_info = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning(
@@ -8548,6 +8587,13 @@ async def pty_ws(ws: WebSocket) -> None:
         )
         await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return
+    # Propagate ticket identity to dashboard identity store
+    if ticket_info and ticket_info.get("user_id"):
+        _set_dashboard_identity(
+            user_id=ticket_info.get("user_id", ""),
+            user_name=ticket_info.get("user_name", ""),
+            provider=ticket_info.get("provider", ""),
+        )
 
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
@@ -8672,9 +8718,17 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth_reason, _cred, ticket_info = _ws_auth_reason(ws)
+    if auth_reason is not None:
         await ws.close(code=4401)
         return
+    # Propagate ticket identity to dashboard identity store
+    if ticket_info and ticket_info.get("user_id"):
+        _set_dashboard_identity(
+            user_id=ticket_info.get("user_id", ""),
+            user_name=ticket_info.get("user_name", ""),
+            provider=ticket_info.get("provider", ""),
+        )
 
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)

@@ -155,7 +155,7 @@ def test_read_session_cookies_from_request_bare_name():
         )],
     }
     req = Request(scope)
-    at, rt = read_session_cookies(req)
+    at, rt, _idt = read_session_cookies(req)
     assert at == "at_value"
     assert rt == "rt_value"
 
@@ -174,7 +174,7 @@ def test_read_session_cookies_from_request_host_prefix():
         )],
     }
     req = Request(scope)
-    at, rt = read_session_cookies(req)
+    at, rt, _idt = read_session_cookies(req)
     assert at == "at_value"
     assert rt == "rt_value"
 
@@ -193,14 +193,14 @@ def test_read_session_cookies_from_request_secure_prefix():
         )],
     }
     req = Request(scope)
-    at, rt = read_session_cookies(req)
+    at, rt, _idt = read_session_cookies(req)
     assert at == "at_value"
     assert rt == "rt_value"
 
 
 def test_read_session_cookies_missing_returns_none():
     req = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
-    assert read_session_cookies(req) == (None, None)
+    assert read_session_cookies(req) == (None, None, None)
 
 
 def test_read_pkce_cookie_round_trip():
