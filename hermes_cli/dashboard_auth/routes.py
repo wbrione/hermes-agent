@@ -547,7 +547,7 @@ async def auth_logout(request: Request):
         for provider in list_providers():
             try:
                 provider.revoke_session(refresh_token=rt)
-            except Exception as e:  # noqa: BLE001 — best-effort
+            except Exception as e:  # noqa: BLE001
                 _log.warning(
                     "dashboard-auth: revoke on %r failed: %s",
                     provider.name, e,
@@ -563,8 +563,11 @@ async def auth_logout(request: Request):
 
     prefix = _prefix(request)
     # RP-initiated logout: if the provider exposes an end-session endpoint,
-    # redirect the browser there so the IdP also destroys its session.
+    # return the redirect URL in the JSON body so the SPA can navigate
+    # the browser there (fetch() follows 302 transparently, so a
+    # RedirectResponse would never reach the IdP).
     _at, _rt, _idt = read_session_cookies(request)
+    idp_logout_url = None
     if sess:
         end_session_url = None
         for provider in list_providers():
@@ -582,13 +585,9 @@ async def auth_logout(request: Request):
             if _idt:
                 _encoded_idt = urllib.parse.quote(_idt, safe="")
                 params += f"&id_token_hint={_encoded_idt}"
-            redirect_url = f"{end_session_url}?{params}"
-            resp = RedirectResponse(url=redirect_url, status_code=302)
-            clear_session_cookies(resp, prefix=prefix)
-            clear_pkce_cookie(resp, prefix=prefix)
-            return resp
+            idp_logout_url = f"{end_session_url}?{params}"
 
-    resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
+    resp = JSONResponse({"ok": True, "redirect_url": idp_logout_url})
     clear_session_cookies(resp, prefix=prefix)
     clear_pkce_cookie(resp, prefix=prefix)
     return resp

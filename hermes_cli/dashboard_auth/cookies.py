@@ -198,6 +198,10 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
             f"{variant}{SESSION_RT_COOKIE}", "", max_age=0,
             path=path, httponly=True, samesite="lax",
         )
+        response.set_cookie(
+            f"{variant}{SESSION_IDT_COOKIE}", "", max_age=0,
+            path=path, httponly=True, samesite="lax",
+        )
 
 
 def set_pkce_cookie(

@@ -3323,6 +3323,12 @@ class HermesCLI:
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
             or CLI_CONFIG["agent"].get("system_prompt", "")
         )
+        # Prepend Current Session Context (identity + platform info)
+        _cli_ctx = _build_cli_context_prompt()
+        if _cli_ctx and self.system_prompt:
+            self.system_prompt = f"{_cli_ctx}\n\n{self.system_prompt}"
+        elif _cli_ctx:
+            self.system_prompt = _cli_ctx
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
         
         # Ephemeral prefill messages (few-shot priming, never persisted)

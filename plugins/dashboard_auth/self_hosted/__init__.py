@@ -319,6 +319,19 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             logger.debug("self-hosted OIDC: revoke failed (ignored): %s", exc)
         return None
 
+    def get_end_session_url(self) -> Optional[str]:
+        """Return the IdP's end_session_endpoint for RP-initiated logout.
+
+        Read from the cached OIDC discovery document. Returns None if the
+        IdP doesn't advertise the endpoint (some older IDPs don't).
+        """
+        try:
+            disco = self._get_discovery()
+        except ProviderError:
+            return None
+        endpoint = str(disco.get("end_session_endpoint") or "").strip()
+        return endpoint or None
+
     # ---- internals: token exchange ----------------------------------------
 
     def _exchange(
@@ -467,12 +480,17 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             payload.get("revocation_endpoint", "") or ""
         ).strip()
 
+        end_session_endpoint = str(
+            payload.get("end_session_endpoint", "") or ""
+        ).strip()
+
         return {
             "issuer": advertised_issuer or self._issuer,
             "authorization_endpoint": authorization_endpoint,
             "token_endpoint": token_endpoint,
             "jwks_uri": jwks_uri,
             "revocation_endpoint": revocation_endpoint,
+            "end_session_endpoint": end_session_endpoint,
         }
 
     # ---- internals: JWT verification --------------------------------------
