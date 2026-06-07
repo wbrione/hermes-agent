@@ -8351,7 +8351,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str, Optional[Dict[
         if internal:
             try:
                 consume_internal_credential(internal)
-                return None, "internal"
+                return None, "internal", None
             except TicketInvalid as exc:
                 audit_log(
                     AuditEvent.WS_TICKET_REJECTED,
@@ -8359,15 +8359,15 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str, Optional[Dict[
                     ip=(ws.client.host if ws.client else ""),
                     path=ws.url.path,
                 )
-                return "internal_invalid", "internal"
+                return "internal_invalid", "internal", None
 
         ticket = ws.query_params.get("ticket", "")
         if not ticket:
-            return "no_credential", "none"
+            return "no_credential", "none", None
 
         try:
-            consume_ticket(ticket)
-            return None, "ticket"
+            ticket_info = consume_ticket(ticket)
+            return None, "ticket", ticket_info
         except TicketInvalid as exc:
             audit_log(
                 AuditEvent.WS_TICKET_REJECTED,
@@ -8382,7 +8382,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str, Optional[Dict[
         return "no_credential", "none", None
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         return None, "token", None
-    return "token_mismatch", "token"
+    return "token_mismatch", "token", None
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
