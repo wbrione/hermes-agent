@@ -273,16 +273,24 @@ export const api = {
       allowUnauthorized: true,
     }),
   logout: () =>
-    fetch(`${BASE}/auth/logout`, {
-      method: "POST",
-      credentials: "include",
-    }).then((r) => {
-      // /auth/logout returns 302 → /login. Follow that with a full-page
-      // navigation rather than letting fetch() opaquely consume the
-      // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
-      return r;
-    }),
+   fetch(`${BASE}/auth/logout`, {
+     method: "POST",
+     credentials: "include",
+   }).then(async (r) => {
+     // /auth/logout returns JSON with {ok, redirect_url}.
+     // If redirect_url is present (RP-initiated logout), navigate the
+     // browser to the IdP's end-session endpoint so the IdP session is
+     // also terminated. Otherwise fall back to /login.
+     try {
+       const body = await r.json();
+       if (body.redirect_url) {
+         window.location.assign(body.redirect_url);
+         return r;
+       }
+     } catch { /* not JSON or parse error — fall through */ }
+     window.location.assign("/login");
+     return r;
+   }),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
