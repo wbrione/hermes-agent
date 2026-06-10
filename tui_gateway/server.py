@@ -2982,7 +2982,14 @@ def _make_agent(
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part
             ).strip()
-    # Prefer a per-session model override (set by a prior in-session /model
+        # Prepend dashboard/terminal session context to the system prompt
+        # so the agent knows who it's talking to (matching Telegram/Discord).
+        _ctx = _build_dashboard_context_prompt()
+        if _ctx and system_prompt:
+            system_prompt = f"{_ctx}\n\n{system_prompt}"
+        elif _ctx:
+            system_prompt = _ctx
+        # Prefer a per-session model override (set by a prior in-session /model
     # switch) over global config/env resolution. This keeps a rebuilt session
     # (/new, resume) on the model the user picked FOR THIS SESSION, without
     # reading process-global env vars that another session may have changed.

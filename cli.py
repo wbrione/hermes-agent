@@ -3129,6 +3129,30 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 
 
+def _build_cli_context_prompt() -> str:
+    """Build a Current Session Context block for CLI sessions.
+
+    Mirrors the Telegram/Discord/TUI gateway context injection so the
+    CLI agent also knows who it's talking to. Identity comes from the
+    OS environment ($USER / $USERNAME) — there is no OAuth in CLI mode.
+    """
+    import platform as _plat
+
+    _os_user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+    if not _os_user:
+        return ""
+
+    lines = [
+        "## Current Session Context",
+        "",
+        "**Source:** Local",
+        f"**User:** {_os_user}",
+        f"**Platform:** {_plat.system()} {_plat.machine()}",
+    ]
+
+    return "\n".join(lines)
+
+
 # ============================================================================
 # HermesCLI Class
 # ============================================================================
@@ -3364,6 +3388,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
             or CLI_CONFIG["agent"].get("system_prompt", "")
         )
+        # Prepend Current Session Context (identity + platform info)
+        _cli_ctx = _build_cli_context_prompt()
+        if _cli_ctx and self.system_prompt:
+            self.system_prompt = f"{_cli_ctx}\n\n{self.system_prompt}"
+        elif _cli_ctx:
+            self.system_prompt = _cli_ctx
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
         
         # Ephemeral prefill messages (few-shot priming, never persisted)
