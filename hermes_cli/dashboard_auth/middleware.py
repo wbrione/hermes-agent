@@ -39,7 +39,8 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login",
     "/auth/callback",
     "/auth/password-login",
-    "/auth/logout",
+    # "/auth/logout" removed -- must go through gated_auth_middleware so
+    # request.state.session is populated for RP-initiated logout.
     "/login",
     "/api/auth/providers",
     "/assets/",
@@ -185,7 +186,14 @@ async def gated_auth_middleware(
     if _path_is_public(path):
         return await call_next(request)
 
-    at, _rt = read_session_cookies(request)
+    # WebSocket upgrade requests are authenticated by the per-endpoint
+    # WS auth layer (_ws_auth_reason via ?ticket= or ?internal=), not by
+    # session cookies. Pass them through so the WS handler can accept
+    # or reject based on its own auth.
+    if request.headers.get("upgrade", "").lower() == "websocket":
+        return await call_next(request)
+
+    at, _rt, _idt = read_session_cookies(request)
     if not at and not _rt:
         # Neither token present — no session at all. Nothing to verify or
         # refresh; force login.
@@ -280,6 +288,7 @@ async def gated_auth_middleware(
                 access_token_expires_in=_expires_in_seconds(new_session),
                 use_https=detect_https(request),
                 prefix=prefix_from_request(request),
+                id_token=new_session.id_token,
             )
             audit_log(
                 AuditEvent.REFRESH_SUCCESS,

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import urllib.parse
 from collections import defaultdict, deque
 from typing import Any, Deque, Dict, Tuple
 
@@ -45,6 +46,7 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_cookies,
 )
 from hermes_cli.dashboard_auth.login_page import render_login_html
+from hermes_cli.dashboard_auth.prefix import resolve_public_url as _resolve_public_url
 
 _log = logging.getLogger(__name__)
 
@@ -348,6 +350,7 @@ async def auth_callback(
         access_token_expires_in=expires_in,
         use_https=detect_https(request),
         prefix=_prefix(request),
+        id_token=session.id_token,
     )
     clear_pkce_cookie(resp, prefix=_prefix(request))
     return resp
@@ -529,13 +532,14 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         access_token_expires_in=expires_in,
         use_https=detect_https(request),
         prefix=_prefix(request),
+        id_token=session.id_token,
     )
     return resp
 
 
 @router.post("/auth/logout", name="auth_logout")
 async def auth_logout(request: Request):
-    _at, rt = read_session_cookies(request)
+    _at, rt, _idt = read_session_cookies(request)
     if rt:
         # Best-effort revoke. Try every provider so a session minted by
         # any registered provider is revoked correctly. Failures are
@@ -558,7 +562,32 @@ async def auth_logout(request: Request):
     )
 
     prefix = _prefix(request)
-    resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
+    # RP-initiated logout: if the provider exposes an end-session endpoint,
+    # return the redirect URL in the JSON body so the SPA can navigate
+    # the browser there (fetch() follows 302 transparently, so a
+    # RedirectResponse would never reach the IdP).
+    _at, _rt, _idt = read_session_cookies(request)
+    idp_logout_url = None
+    if sess:
+        end_session_url = None
+        for provider in list_providers():
+            if provider.name == sess.provider:
+                end_session_url = provider.get_end_session_url()
+                break
+        if end_session_url:
+            public_url = _resolve_public_url()
+            if not public_url:
+                scheme = "https" if detect_https(request) else "http"
+                host = request.headers.get("host", request.url.hostname or "localhost")
+                public_url = f"{scheme}://{host}"
+            post_logout = urllib.parse.quote(f"{public_url}/login", safe="")
+            params = f"post_logout_redirect_uri={post_logout}"
+            if _idt:
+                _encoded_idt = urllib.parse.quote(_idt, safe="")
+                params += f"&id_token_hint={_encoded_idt}"
+            idp_logout_url = f"{end_session_url}?{params}"
+
+    resp = JSONResponse({"ok": True, "redirect_url": idp_logout_url})
     clear_session_cookies(resp, prefix=prefix)
     clear_pkce_cookie(resp, prefix=prefix)
     return resp
@@ -611,7 +640,7 @@ async def api_auth_ws_ticket(request: Request):
     # don't load the ticket store.
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
 
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
+    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, user_name=sess.display_name)
     audit_log(
         AuditEvent.WS_TICKET_MINTED,
         provider=sess.provider,

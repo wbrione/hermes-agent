@@ -328,6 +328,62 @@ class _SlashWorker:
                     pass
 
 
+
+def _build_dashboard_context_prompt() -> str:
+    """Build a session context prompt so the TUI agent knows who it's
+    talking to -- mirroring the gateway's session context for
+    Telegram/Discord agents.
+
+    Two modes:
+
+     * **Dashboard mode** (identity available from WS ticket): Source is
+     Dashboard, user identity comes from the Authentik/OAuth session.
+     * **Terminal mode** (no dashboard identity): Source is Local, user
+     identity comes from the OS ($USER / $USERNAME).
+
+    Returns an empty string only when no identity can be determined at all.
+    """
+    import platform as _platform
+
+    _uid = ""
+    _uname = ""
+    _provider = ""
+    try:
+        from hermes_cli.web_server import _get_dashboard_identity
+        _uid, _uname, _provider = _get_dashboard_identity()
+    except Exception:
+        pass
+
+    if not _uid:
+        _uid = os.environ.get("HERMES_SESSION_USER_ID", "")
+    if not _uname:
+        _uname = os.environ.get("HERMES_SESSION_USER_NAME", "")
+
+    source = "Dashboard" if _provider else "Local"
+
+    if not _uid:
+        # Fallback to OS user
+        _uid = os.environ.get("USER", os.environ.get("USERNAME", ""))
+        _uname = _uid
+        source = "Local"
+
+    if not _uid:
+        return ""
+
+    _os_info = f"{_platform.system()} {_platform.release()}".strip()
+    _python_ver = _platform.python_version()
+
+    lines = [
+        f"## Current Session Context",
+        f"",
+        f"**Source:** {source}",
+        f"**User ID:** {_uid}",
+        f"**User Name:** {_uname}",
+        f"**Platform:** {_os_info}",
+        f"**Python:** {_python_ver}",
+    ]
+    return "\n".join(lines)
+
 def _load_busy_input_mode() -> str:
     display = _load_cfg().get("display")
     if not isinstance(display, dict):
